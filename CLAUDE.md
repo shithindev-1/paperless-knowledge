@@ -237,8 +237,12 @@ Rules for main + backup repos:
 | 2026-10-27 | Professional restructure (thin endpoints, use-case services, file_loader, APP_ENV, DOCS_ENABLED, tests, no leaks); `/health` no longer shows model |
 | 2026-10-27 | `MatchedOcrFile` also set for unmatched payments (closest cheque's file) |
 | 2026-10-27 | Pushed to main + backup repos; knowledge repo created |
+| 2026-10-27 | Verified before UAT: 39 unit tests pass; app starts; /health, /docs OK; OpenAPI has no model name; /match on 4 samples gives expected results; empty list 400, bad date 422, disallowed URL rejected |
 
 ## 11. Open items
-- Unit tests and the restructured app have **not yet been run** (awaiting user permission).
-- Re-test `/match` in Postman after the restructure.
-- Deployment files (Docker / App Service) not added; user deploys UAT manually.
+- **UAT deploy (user, manual)**: VM 194.233.75.55, NSSM service `PaperlessChequeApi`
+  ("Paperless Cheque API"), folder `D:\AI-project\paperless-cheque`, port 8007
+  (8005/8006 taken). Start: `.venv\Scripts\python -m uvicorn app.main:app --host 0.0.0.0 --port 8007`.
+  Health is `/api/v1/health`. `.env` on VM: `APP_ENV=uat`, `LOCAL_FILES_DIR` empty.
+- Blob URL download not yet tested with a real Azure SAS URL.
+- **On hold:** cheque image cropping and rotation (requested 2026-10-27).
