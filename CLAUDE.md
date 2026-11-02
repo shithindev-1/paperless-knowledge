@@ -17,7 +17,8 @@ Use this as the starting context for any work on the codebase.
 A FastAPI service for UAE property-leasing cheques.
 
 1. **Extract** (`POST /api/v1/cheques/extract`): upload cheque images/PDFs (multipart `files`),
-   get back for every cheque: date, amount, installment number, service, overlap error. No cropping.
+   get back for every cheque: date, amount (figures), amount in words, installment, service,
+   payee name, holder name, IBAN, `unclear_fields`, `issues`, `error`. No cropping.
 2. **Match** (`POST /api/v1/cheques/match`): send cheque file URLs (Azure Blob) plus the
    expected payment schedule from the backend; the API OCRs every file, marks each payment
    as matched / not matched, and crops/rotates the **matched** cheques into `_ocr.pdf` files.
@@ -92,8 +93,10 @@ no logic. `payment_matcher.py`, `image_processor.py` and `utils/` have no I/O.
 
 ### 3.2 Matching (`/cheques/match`)
 Request: `{"file_urls": [...], "payments": [ {RentPaymentId, Installment, ServiceId,
-ServiceDescription, Amount, DueDate, ...} ]}`. Response: the **payment list only**; extra keys
-the caller sends are returned unchanged. Four keys filled:
+ServiceDescription, Amount, DueDate, ChequepayeeName?, ChequeHolderName?, ChequeHolderIBAN?, ...} ]}`.
+`file_urls` must be a JSON **array of plain URL strings** (not objects, not comma-separated);
+the list key is `payments` (not `payment_services`) — the .NET team hit 422 on both (2026-10-29).
+Response: the **payment list only**; extra keys the caller sends are returned unchanged. Four keys filled:
 
 | Key | Matched | Not matched |
 |---|---|---|
@@ -102,9 +105,18 @@ the caller sends are returned unchanged. Four keys filled:
 | `CroppedOCRFileURL` | `..._ocr.pdf` URL if cropped/rotated, else null | **always null** (never processed) |
 | `OcrResponse` | `"Matched"` | short reason (below) |
 
-- **Match = same Amount (±0.01) AND same date.** Installment and service NOT checked
-  (backend sends correct installments; check was built then removed).
+- **Match = same Amount (±0.01) AND same date AND every name/IBAN sent matches AND the cheque
+  has no issues (§3.7) and no unclear core field.** Installment and service NOT checked.
+- **Name / IBAN (2026-11-02):** `ChequepayeeName` -> `payee_name`, `ChequeHolderName` ->
+  `holder_name`, `ChequeHolderIBAN` -> `iban`. Checked **only when a non-empty value is sent**.
+  **Strict**: names ignore only case + repeated spaces (`L.L.C.` ≠ `LLC`, `Ahmad` ≠ `Ahmed`);
+  IBAN ignores only spaces. Messages: `Payee name doesn't match. Cheque shows X.`,
+  `IBAN not found on the cheque.` (sent but not printed). IBAN is often not printed on UAE cheques.
+- `ChequeAmountInWords` request key was added then **removed** (2026-11-02): the backend checks
+  words vs figures on every cheque instead.
 - Payments in request order; **each cheque used at most once**.
+- `OcrResponse` order: cheque issues (Signature / words≠figures / damaged first, then the rest)
+  -> amount/date -> name/IBAN -> "X is not clearly visible." -> "Please upload a clear copy."
 - `OcrResponse` reasons show **only the cheque's value**, never the expected one:
   - `Date doesn't match. Cheque date is 01-10-2026.`
   - `Amount doesn't match. Cheque amount is 5,000.`
@@ -124,12 +136,18 @@ the caller sends are returned unchanged. Four keys filled:
   `needs_crop`, or rotation ≥ 1°. Otherwise `CroppedOCRFileURL` = null.
 - OpenCV: render PDF page (200 dpi) -> crop to box (0-1000 scale, 2% padding) -> quarter turns
   + tilt (white fill) -> saved as a **one-page PDF** (JPEG q92 inside, page sized at render dpi).
-- Naming (suffix `processed_file_suffix` = `_ocr`), always `.pdf`, saved **next to the original**:
+- Naming (suffix `processed_file_suffix` = `_ocr`), always `.pdf`:
   - 1 cheque in file: `<name>_ocr.pdf`
   - several cheques: `<name>_ocr_<n>.pdf` (n = cheque's position in the file; only matched ones created)
-- Blob: written only if the URL is inside `azure_blob_base_url` (connection string). Other URLs
-  are read-only -> original kept. Local mode: written into `local_files_dir`.
-- Re-sending the same file overwrites. Any failure -> original kept, logged.
+- **Folder (2026-10-30/11-02):** `processed_folder` = `ApplicationFiles/ChequeMatchOcr/Cropped`
+  (default in committed `settings.json`, relative to the container) ->
+  `.../ChequeMatchOcr/Cropped/<request-id>/<name>_ocr.pdf`. **One 32-char GUID folder per request**
+  (same id as in logs), so concurrent / repeated hits never overwrite. Written directly, no move;
+  original untouched. `processed_folder: null` = old behaviour (next to the original).
+  Storage grows per call -> suggest an Azure lifecycle rule on `ChequeMatchOcr/Cropped/`.
+- Blob: written only if the source URL is inside `azure_blob_base_url` (connection string). Other
+  URLs are read-only -> original kept. Local mode: written under `local_files_dir`.
+- Any failure -> original kept, logged.
 - Limits: overlapped crops may include part of the covering cheque; hidden parts can't be
   recovered; no perspective (keystone) correction; quality depends on model's box.
 
@@ -151,6 +169,27 @@ the caller sends are returned unchanged. Four keys filled:
 - Guidance given: one key per service in prod (user asked about sharing with leasing OCR key;
   OK for UAT, separate for prod). Call from backend, not browser.
 
+### 3.7 Cheque checks (every cheque, 2026-11-02)
+OCR returns `issues: [{code, detail}]` and `unclear_fields`; `ChequeOcr` validator adds backend
+checks and writes all problems into `error`. Any issue -> payment unmatched, reason in `OcrResponse`.
+
+**Checked first (user's priority list, always first in OcrResponse):**
+| Code | Message |
+|---|---|
+| SIGNATURE_MISSING | `Signature missing.` |
+| AMOUNT_MISMATCH | `Amount in words (Five Thousand) does not match figures (8,000).` — **backend decides** from `amount_in_words_value` vs `cheque_amount`; model's flag dropped if numbers agree |
+| DAMAGED | `Cheque appears damaged near the MICR line.` (location from OCR) + clear-copy request |
+
+**Also checked (kept; user said "keep it like this"):** ALTERATION, AMOUNT_MISSING, DATE_ISSUE
+(missing/invalid, or **stale > 6 months**, decided by backend; post-dated OK), PAYEE_ISSUE,
+MIXED_LANGUAGE, ILLEGIBLE, IMAGE_INCOMPLETE.
+
+**Unclear fields:** fields present but not clearly readable are returned null, never guessed or
+compared -> `Payee name is not clearly visible. Please upload a clear copy.` Core fields (date,
+amount, words, payee) always count; holder name / IBAN only when the caller sent them.
+A field simply not printed is not "unclear". Issues already explained by an unclear field are not repeated.
+Prompt gets today's UAE date via `{today}` (for staleness).
+
 ---
 
 ## 4. Configuration
@@ -165,7 +204,8 @@ in a config file stop startup.
   `cors_origins`, `docs_enabled`, `local_files_dir`.
 - **Shared defaults:** sampling (temp 0, top_p 0.95, top_k 40, 4096 tokens), retries 2, timeout 120 s,
   limits (20 files, 15 MB, 5 concurrent), `azure_sas_expiry_hours` 0, image processing
-  (enabled, `_ocr`, padding 2%, 200 dpi, JPEG q92).
+  (enabled, `_ocr`, `processed_folder` = `ApplicationFiles/ChequeMatchOcr/Cropped`, padding 2%,
+  200 dpi, JPEG q92).
 - UAT blob base: `https://softspacestorage.blob.core.windows.net/realestateapp-applicationfiles-uat/`
   (files under `ApplicationFiles/OCR/Temp/<guid>`).
 
@@ -266,9 +306,21 @@ Rules for main + backup repos:
 | 2026-10-27 | Pushed `e4b8357`; deployed to UAT VM (NSSM, port 8007); working with blob URLs |
 | 2026-10-28 | `MatchedOcrFile` -> `MatchedOcrFileURL`; new `CroppedOCRFileURL`; processed files saved as `_ocr.pdf` / `_ocr_N.pdf`; only matched cheques are cropped. Pushed `f746a4d` to main + backup (tests not run before push) |
 
+| 2026-10-29 | Diagnosed .NET 422 from VM log (file_urls objects, `payment_services`); file_urls = array; concurrency/overwrite review |
+| 2026-10-30 | Cropped files -> `ChequeMatchOcr/Cropped/<request-id>/` (`processed_folder`, full GUID request id) |
+| 2026-11-02 | `ChequepayeeName` / `ChequeHolderName` / `ChequeHolderIBAN` strict checks; `/extract` returns payee/holder/IBAN/words |
+| 2026-11-02 | Unclear fields never guessed -> "not clearly visible. Please upload a clear copy."; cheque issue checks (signature, words≠figures, damaged first; alteration, stale date, etc.); `ChequeAmountInWords` added then removed |
+
 ## 12. Open items
-- Deploy `f746a4d` to VM and verify; notify frontend of renamed keys.
-- Run `python -m pytest` on the latest code.
+- **Uncommitted in main repo** (since `f746a4d`): cropped folder, name/IBAN checks, unclear fields,
+  cheque issue checks. Not tested, not pushed, not on VM. Next: `python -m pytest` -> Postman with
+  `sctrd.jpg` -> push main + backup -> VM `git pull` + restart (no config change needed).
+- Tell frontend/.NET: new optional request keys, new OcrResponse messages, new cropped URL path.
+- Watch in UAT: strict name matching false negatives; model's "unclear"/issue calls too strict or lax.
+- Bank statements not handled (fields read from cheques only).
+- `sctrd.jpg` test (4 cheques): A 10,000 @ 27-09-2026, B 5,333 @ 05-08-2026, C 5,000 @ 01-10-2026,
+  D 6,667 @ 05-03-2027. Names / IBANs are personal data: never store them in this repo; read them
+  with `/cheques/extract` when needed.
 - Rotate the storage account key before prod; delete local `.env.backup`.
 - Decide `azure_sas_expiry_hours` (is the container private? returned URLs need SAS if so).
 - Set UAT `cors_origins` to the frontend origin.
