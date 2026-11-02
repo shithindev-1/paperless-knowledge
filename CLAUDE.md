@@ -134,8 +134,13 @@ Response: the **payment list only**; extra keys the caller sends are returned un
 - Order: extract all -> match -> `_crop_matched()` processes **only matched cheques**.
 - A cheque is processed when its file holds **more than one cheque**, or the model says
   `needs_crop`, or rotation ≥ 1°. Otherwise `CroppedOCRFileURL` = null.
-- OpenCV: render PDF page (200 dpi) -> crop to box (0-1000 scale, 2% padding) -> quarter turns
-  + tilt (white fill) -> saved as a **one-page PDF** (JPEG q92 inside, page sized at render dpi).
+- OpenCV: render PDF page (200 dpi) -> crop to box (0-1000 scale, 2% padding) -> quarter turn
+  from model's `text_top` (up 0 / right -90 / down 180 / left 90, clockwise) -> fine tilt
+  **measured by OpenCV** (`measure_tilt`: Hough lines within ±20°, length-weighted median;
+  falls back to model `tilt_degrees`) -> `_trim_to_cheque` removes background corners ->
+  saved as a **one-page PDF** (JPEG q92 inside). `rotation_degrees` is now a computed property.
+  (Before 2026-11-02 the model returned a signed `rotation_degrees` and confused directions.)
+- Local testing: `settings.local.json` `processed_folder: "processed"` -> `samples\processed\<request-id>\`.
 - Naming (suffix `processed_file_suffix` = `_ocr`), always `.pdf`:
   - 1 cheque in file: `<name>_ocr.pdf`
   - several cheques: `<name>_ocr_<n>.pdf` (n = cheque's position in the file; only matched ones created)
@@ -184,6 +189,19 @@ checks and writes all problems into `error`. Any issue -> payment unmatched, rea
 (missing/invalid, or **stale > 6 months**, decided by backend; post-dated OK), PAYEE_ISSUE,
 MIXED_LANGUAGE, ILLEGIBLE, IMAGE_INCOMPLETE.
 
+**ALTERATION** (any strike-through / overwritten character / correction, even initialled) is 4th in
+priority: `Overwriting or strike-through found on the <field>. UAE banks do not accept altered
+cheques. Please provide a new cheque.`
+
+**Bad images (2026-11-02 evening):**
+- Backend nulls every field listed in `unclear_fields` (the model sometimes returns a guess anyway).
+- `IMAGE_INCOMPLETE` / `ILLEGIBLE` = `unreadable`: no amount/date/name comparison, no derived
+  issues, and the whole OcrResponse is just `Cheque image is incomplete or unclear. Please upload a clear, full copy.`
+- **Sharpness gate** in `ChequeExtractor._drop_unreadable`: `image_processor.sharpness()` (Laplacian
+  variance at 1000 px width) per page; below `min_image_sharpness` (25, config) the cheque becomes
+  `as_unreadable()` — all values dropped. Calibrated: real cheques 80–590, blurred 1.7, low-res 6.3.
+- Model details longer than 45 chars (`MAX_DETAIL_LENGTH`) are dropped from messages.
+
 **Unclear fields:** fields present but not clearly readable are returned null, never guessed or
 compared -> `Payee name is not clearly visible. Please upload a clear copy.` Core fields (date,
 amount, words, payee) always count; holder name / IBAN only when the caller sent them.
@@ -202,7 +220,7 @@ in a config file stop startup.
 - **`.env` (secrets only, gitignored):** `APP_ENV`, `API_KEYS`, `GEMINI_API_KEY`, `AZURE_STORAGE_CONNECTION_STRING`.
 - **`settings.<env>.json` (gitignored):** `gemini_model` (`gemini-3.8-flash`), `azure_blob_base_url`,
   `cors_origins`, `docs_enabled`, `local_files_dir`.
-- **Shared defaults:** sampling (temp 0, top_p 0.95, top_k 40, 4096 tokens), retries 2, timeout 120 s,
+- **Shared defaults:** sampling (temp **1.0** since 2026-11-02, was 0; top_p 0.95, top_k 40, 4096 tokens), retries 2, timeout 120 s,
   limits (20 files, 15 MB, 5 concurrent), `azure_sas_expiry_hours` 0, image processing
   (enabled, `_ocr`, `processed_folder` = `ApplicationFiles/ChequeMatchOcr/Cropped`, padding 2%,
   200 dpi, JPEG q92).
@@ -310,11 +328,14 @@ Rules for main + backup repos:
 | 2026-10-30 | Cropped files -> `ChequeMatchOcr/Cropped/<request-id>/` (`processed_folder`, full GUID request id) |
 | 2026-11-02 | `ChequepayeeName` / `ChequeHolderName` / `ChequeHolderIBAN` strict checks; `/extract` returns payee/holder/IBAN/words |
 | 2026-11-02 | Unclear fields never guessed -> "not clearly visible. Please upload a clear copy."; cheque issue checks (signature, words≠figures, damaged first; alteration, stale date, etc.); `ChequeAmountInWords` added then removed |
+| 2026-11-02 | Alteration message (bank rejects); short messages; never-guess (null unclear, sharpness gate); text_top + OpenCV tilt + trim; temperature 1.0 + JSON retry; test cheque generator (local). Committed `736041e`, pushed to **backup only** |
 
 ## 12. Open items
-- **Uncommitted in main repo** (since `f746a4d`): cropped folder, name/IBAN checks, unclear fields,
-  cheque issue checks. Not tested, not pushed, not on VM. Next: `python -m pytest` -> Postman with
-  `sctrd.jpg` -> push main + backup -> VM `git pull` + restart (no config change needed).
+- **Resume point:** local scenario testing done for 01–21; continue from `22_tilted_on_desk.jpg`
+  (see PROJECT_MEMORY.md). Then `python -m pytest`, then push main (only with user's OK) + VM.
+- **Main repo is at `f746a4d`; local/backup at `736041e`.** User said: do not push to main yet.
+- Known model issue: at temperature 0 the model looped on digits until max tokens (fixed by
+  temperature 1.0 + retry) — verify 02 and 20 now succeed.
 - Tell frontend/.NET: new optional request keys, new OcrResponse messages, new cropped URL path.
 - Watch in UAT: strict name matching false negatives; model's "unclear"/issue calls too strict or lax.
 - Bank statements not handled (fields read from cheques only).
