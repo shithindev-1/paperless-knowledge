@@ -93,7 +93,8 @@ no logic. `payment_matcher.py`, `image_processor.py` and `utils/` have no I/O.
 
 ### 3.2 Matching (`/cheques/match`)
 Request: `{"file_urls": [...], "payments": [ {RentPaymentId, Installment, ServiceId,
-ServiceDescription, Amount, DueDate, ChequepayeeName?, ChequeHolderName?, ChequeHolderIBAN?, ...} ]}`.
+ServiceDescription, Amount, DueDate, ChequepayeeName?, ChequeHolderName?, ChequeHolderNameAr?,
+ChequeHolderIBAN?, ...} ]}`.
 `file_urls` must be a JSON **array of plain URL strings** (not objects, not comma-separated);
 the list key is `payments` (not `payment_services`) — the .NET team hit 422 on both (2026-10-29).
 Response: the **payment list only**; extra keys the caller sends are returned unchanged. Four keys filled:
@@ -109,9 +110,20 @@ Response: the **payment list only**; extra keys the caller sends are returned un
   has no issues (§3.7) and no unclear core field.** Installment and service NOT checked.
 - **Name / IBAN (2026-11-02):** `ChequepayeeName` -> `payee_name`, `ChequeHolderName` ->
   `holder_name`, `ChequeHolderIBAN` -> `iban`. Checked **only when a non-empty value is sent**.
-  **Strict**: names ignore only case + repeated spaces (`L.L.C.` ≠ `LLC`, `Ahmad` ≠ `Ahmed`);
-  IBAN ignores only spaces. Messages: `Payee name doesn't match. Cheque shows X.`,
+  Same script: names ignore case, spaces and **punctuation** (2026-11-02 late: `MS.` = `MS`,
+  `L.L.C.` = `LLC`) but every letter must match (`Ahmad` ≠ `Ahmed`); IBAN ignores spaces (and
+  Arabic digits are converted). Messages: `Payee name doesn't match. Cheque shows X.`,
   `IBAN not found on the cheque.` (sent but not printed). IBAN is often not printed on UAE cheques.
+- **Arabic (2026-11-03):** new optional key `ChequeHolderNameAr` (holder name in Arabic, null if not
+  sent; label in messages "Arabic holder name"). Any name key may be English or Arabic. The model
+  also returns internal `holder_name_ar` (Arabic holder printed beside English) and
+  `payee_name_latin` / `holder_name_latin` (English spelling of an Arabic name) — never in responses.
+  `_names_match`: if the cheque shows the name in the **same script** as sent -> strict letters;
+  only if it has it **only in the other script** -> compared **by sound** (`_sound`: vowels, y/w,
+  doubled letters, final h ignored; Arabic converted by `utils/arabic.arabic_to_latin`, plus the
+  model's latin spelling). Mismatch shows the cheque name(s), `A / B` if both scripts, plus
+  `(English spelling)` for an Arabic-only name when English was sent.
+  Arabic letter variants (ا/أ/إ, ة/ه, ى/ي) are still strict within Arabic — **user decision pending**.
 - `ChequeAmountInWords` request key was added then **removed** (2026-11-02): the backend checks
   words vs figures on every cheque instead.
 - Payments in request order; **each cheque used at most once**.
@@ -160,6 +172,8 @@ Response: the **payment list only**; extra keys the caller sends are returned un
 `parse_date()` accepts ISO, numeric (`05/11/2026`, `5/11/26`, `2026/11/05`), month names
 (`5 Nov 2026`, `Nov 5, 2026`, `5th Nov 2026`), trailing times, .NET `/Date(ms)/`.
 **Ambiguous numeric dates are day-first (UAE)**. Returns None if unreadable.
+Arabic-Indic digits (`١٠/١١/٢٠٢٦`) are converted first (`utils/arabic.western_digits`), also for
+amounts (`٦٬٢٥٠٫٠٠` -> 6250; before 2026-11-03 this read as **6**) and DueDate. Arabic month names not handled.
 
 ### 3.5 File loading
 - URL inside `azure_blob_base_url` -> read via `BlobStorage` (connection string; works for private container).
@@ -182,12 +196,13 @@ checks and writes all problems into `error`. Any issue -> payment unmatched, rea
 | Code | Message |
 |---|---|
 | SIGNATURE_MISSING | `Signature missing.` |
-| AMOUNT_MISMATCH | `Amount in words (Five Thousand) does not match figures (8,000).` — **backend decides** from `amount_in_words_value` vs `cheque_amount`; model's flag dropped if numbers agree |
+| AMOUNT_MISMATCH | `Amount in words (Five Thousand) does not match figures (8,000).` — **backend decides**: `utils/amount_words.words_to_number(amount_in_words)` vs `cheque_amount` (English words, lakh/crore, fils, fuzzy spelling); model's flag dropped if numbers agree. Arabic words not converted -> model's flag used |
 | DAMAGED | `Cheque appears damaged near the MICR line.` (location from OCR) + clear-copy request |
 
-**Also checked (kept; user said "keep it like this"):** ALTERATION, AMOUNT_MISSING, DATE_ISSUE
-(missing/invalid, or **stale > 6 months**, decided by backend; post-dated OK), PAYEE_ISSUE,
-MIXED_LANGUAGE, ILLEGIBLE, IMAGE_INCOMPLETE.
+**Also checked:** ALTERATION, AMOUNT_MISSING, DATE_ISSUE (only missing / impossible date; the
+**stale-date check was removed 2026-11-02** — a wrong or old date fails the DueDate comparison
+anyway), PAYEE_ISSUE (skipped when `ChequepayeeName` is sent), MIXED_LANGUAGE, ILLEGIBLE, IMAGE_INCOMPLETE.
+User rule: don't add checks already covered by the payment keys.
 
 **ALTERATION** (any strike-through / overwritten character / correction, even initialled) is 4th in
 priority: `Overwriting or strike-through found on the <field>. UAE banks do not accept altered
@@ -206,7 +221,18 @@ cheques. Please provide a new cheque.`
 compared -> `Payee name is not clearly visible. Please upload a clear copy.` Core fields (date,
 amount, words, payee) always count; holder name / IBAN only when the caller sent them.
 A field simply not printed is not "unclear". Issues already explained by an unclear field are not repeated.
-Prompt gets today's UAE date via `{today}` (for staleness).
+**Doubt rule (2026-11-03):** a field is unclear if even one character could be read as another
+(4/6, 1/7, 3/8…). For dates the model lists the doubtful part (`date_day` / `date_month` /
+`date_year`); the whole date is nulled and the message names it: `Year of the cheque date is not
+clearly visible. Please upload a clear copy.` Label "Amount" became `Amount in figures`.
+Trigger: in the 4-cheque photo (scenario 24) the model read 27-09-2026 as 2024 (handwritten 6 looks like 4).
+A *confidently* wrong read is still possible -> proposed fix (not approved): second independent read
+of each cheque from a full-resolution crop; disagreement -> unclear (option A: multi-cheque files only).
+
+**Model output loops (fixed 2026-11-02):** numbers (`cheque_amount`, `installment_number`, `page`,
+`tilt_degrees`) are requested as **strings, maxLength 12** and parsed back (`_parse_number`);
+`amount_in_words_value` removed (backend converts the words). `generate_structured` retries on
+invalid / cut-off JSON and traces wasted tokens.
 
 ---
 
@@ -234,7 +260,14 @@ in a config file stop startup.
 - `logs/app/YYYY-MM-DD.log`: `"<UAE> UAE | <IST> IST | LEVEL | logger | msg"`. Per file: cheques,
   tokens, ms. Per processed cheque: page, rotation, crop, output. Per payment: matched, file,
   cropped, OcrResponse. Summary line with totals.
-- `logs/results/YYYY-MM-DD.jsonl`: one JSON per request (timestamps, model, totals, usage, results).
+- `logs/results/YYYY-MM-DD.jsonl`: **one trace dict per request** (`app/core/tracing.py`, middleware
+  in `main.py`, 2026-11-02): request_id (= `X-Request-ID` header, = cropped folder GUID), endpoint,
+  started/finished {uae, ist}, total_ms, status_code, outcome, client {ip, user_agent, api_key_id =
+  sha256[:10]}, counts, `stages_ms` (load / extraction / matching / cropping), usage, `files[]`
+  (load_ms, queue_wait_ms, model_ms, quality_check_ms, sharpness, tokens, cheques summary — no names),
+  `cheques_processed[]` (process_ms, save_ms, rotation, size_kb), `payments[]` (`checks_sent` = key
+  names only, never values), issues_summary, events (retries with wasted tokens), errors.
+  App log gets one `[id] SUMMARY {...}` line per request.
 - Roll at UAE midnight; SAS redacted; no auto cleanup. On VM also NSSM stdout/stderr logs.
 
 ---
@@ -330,13 +363,17 @@ Rules for main + backup repos:
 | 2026-11-02 | Unclear fields never guessed -> "not clearly visible. Please upload a clear copy."; cheque issue checks (signature, words≠figures, damaged first; alteration, stale date, etc.); `ChequeAmountInWords` added then removed |
 | 2026-11-02 | Alteration message (bank rejects); short messages; never-guess (null unclear, sharpness gate); text_top + OpenCV tilt + trim; temperature 1.0 + JSON retry; test cheque generator (local). Committed `736041e`, pushed to **backup only** |
 
+| 2026-11-02 | Request trace (one dict per request, X-Request-ID); stale check removed; names ignore punctuation; numbers as strings + words converter (loops fixed: requests 0 retries, 4–10 s vs 74 s) |
+| 2026-11-03 | All scenarios 01–40 tested by user; doubtful date part named (day/month/year), one-digit-doubt rule; Arabic: `ChequeHolderNameAr`, English↔Arabic name matching by sound, Arabic-Indic digits; Arabic test scenarios 50–60. pytest 122 passed. Committed `cdba8cb`, pushed to **main + backup** (user approved) |
+
 ## 12. Open items
-- **Resume point:** local scenario testing done for 01–21; continue from `22_tilted_on_desk.jpg`
-  (see PROJECT_MEMORY.md). Then `python -m pytest`, then push main (only with user's OK) + VM.
-- **Main repo is at `f746a4d`; local/backup at `736041e`.** User said: do not push to main yet.
-- Known model issue: at temperature 0 the model looped on digits until max tokens (fixed by
-  temperature 1.0 + retry) — verify 02 and 20 now succeed.
-- Tell frontend/.NET: new optional request keys, new OcrResponse messages, new cropped URL path.
+- **Main + backup at `cdba8cb` (2026-11-03).** VM deploy: `git pull` + `nssm restart PaperlessChequeApi`.
+- Regression of the stricter doubt prompt (01, 06, 23, 24, 26, 32) and Arabic scenarios 50–60 not
+  yet confirmed against the real model at push time — check UAT results.
+- Decide: Arabic letter variants equal or not; Arabic month names; Arabic amount-in-words converter;
+  second-read verification (option A) for confident misreads.
+- Tell frontend/.NET: `ChequeHolderNameAr`, new OcrResponse texts ("Amount in figures…",
+  "Year of the cheque date…", "Arabic holder name…"), `X-Request-ID` header, cropped URL path.
 - Watch in UAT: strict name matching false negatives; model's "unclear"/issue calls too strict or lax.
 - Bank statements not handled (fields read from cheques only).
 - `sctrd.jpg` test (4 cheques): A 10,000 @ 27-09-2026, B 5,333 @ 05-08-2026, C 5,000 @ 01-10-2026,
