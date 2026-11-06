@@ -366,8 +366,12 @@ Rules for main + backup repos:
 | 2026-11-02 | Request trace (one dict per request, X-Request-ID); stale check removed; names ignore punctuation; numbers as strings + words converter (loops fixed: requests 0 retries, 4–10 s vs 74 s) |
 | 2026-11-03 | All scenarios 01–40 tested by user; doubtful date part named (day/month/year), one-digit-doubt rule; Arabic: `ChequeHolderNameAr`, English↔Arabic name matching by sound, Arabic-Indic digits; Arabic test scenarios 50–60. pytest 122 passed. Committed `cdba8cb`, pushed to **main + backup** (user approved) |
 
+| 2026-11-04 | `/cheques/match/upload` (form-data files + payments JSON, same checks); payee / holder / IBAN keys grouped in `cheque_info` (flat keys still accepted); rotation from MICR line position (model text_top mixed up left/right; fallback only); one re-read when a cheque comes back with no date and no amount; closest-cheque ranking (unreadable before clearly different); trace cheque index 0-based. Regression 01/03/20-24/26/50 passed. pytest 152. Commit `f8baa0e` -> backup 2026-11-04, main 2026-11-06 (user approved) |
+
 ## 12. Open items
-- **Main + backup at `cdba8cb` (2026-11-03).** VM deploy: `git pull` + `nssm restart PaperlessChequeApi`.
+- **Main + backup at `f8baa0e` (2026-11-06).** VM: tag `backup-before-f8baa0e` + folder copy, `git pull`, `nssm restart PaperlessChequeApi`.
+- **ALTERATION missed (on hold by user):** since ~2026-11-04 the model no longer flags the cheque_3 payee strike-through (scenarios 14 / 24), also on the old deployed code -> an altered cheque can come back Matched. Proposed (not built): focused second alteration check on matched cheques.
+- Tell .NET: `cheque_info`, `/cheques/match/upload`, X-Request-ID; client timeout >= 120 s (empty-read retry can add ~19 s).
 - Regression of the stricter doubt prompt (01, 06, 23, 24, 26, 32) and Arabic scenarios 50–60 not
   yet confirmed against the real model at push time — check UAT results.
 - Decide: Arabic letter variants equal or not; Arabic month names; Arabic amount-in-words converter;

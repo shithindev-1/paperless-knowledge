@@ -3,7 +3,7 @@
 Short, durable memory for anyone (or any assistant) picking up this project. The full
 technical reference is [CLAUDE.md](CLAUDE.md). Update both after every change.
 
-_Last updated: 2026-11-03_
+_Last updated: 2026-11-06_
 
 ---
 
@@ -11,9 +11,9 @@ _Last updated: 2026-11-03_
 
 | Item | State |
 |---|---|
-| Main repo `paperless_cheque_dev` | `cdba8cb` (2026-11-03) — pushed with the user's approval |
-| Backup repo `papperless-backup` | `cdba8cb` |
-| UAT VM | Deploy `cdba8cb`: `git pull origin main` + `nssm restart PaperlessChequeApi`; `194.233.75.55:8007`, folder `D:\AI-project\papperless-cheque` |
+| Main repo `paperless_cheque_dev` | `f8baa0e` (2026-11-06) — pushed with the user's approval |
+| Backup repo `papperless-backup` | `f8baa0e` |
+| UAT VM | Deploy `f8baa0e` (was `cdba8cb`, tag `backup-before-cdba8cb`): `git pull origin main` + `nssm restart PaperlessChequeApi`; `194.233.75.55:8007`, folder `D:\AI-project\papperless-cheque` |
 
 ### ▶ Resume here (next session)
 1. Confirm the VM deploy (health + one real request; check `logs\results` trace).
@@ -111,7 +111,8 @@ Local samples: `samples/cheque_1..4.pdf` (10000 @ 27-09-2024, 5333 @ 05-08-2026,
 
 ## Open items
 
-- Deploy `cdba8cb` to VM; tell frontend about the new keys and messages.
+- Deploy `f8baa0e` to VM; tell frontend about `cheque_info`, `/cheques/match/upload` and new messages.
+- ON HOLD: model misses strike-through ALTERATION (cheque_3); altered cheque can be Matched. Focused second check proposed, not built.
 - Watch UAT for strict-name false negatives and over/under-strict "unclear" / issue calls.
 - Bank statements not handled yet.
 - Decide SAS for returned URLs (if container is private); set UAT CORS origins.
