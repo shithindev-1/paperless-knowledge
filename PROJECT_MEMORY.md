@@ -3,7 +3,7 @@
 Short, durable memory for anyone (or any assistant) picking up this project. The full
 technical reference is [CLAUDE.md](CLAUDE.md). Update both after every change.
 
-_Last updated: 2026-11-06_
+_Last updated: 2026-11-10_
 
 ---
 
@@ -11,17 +11,16 @@ _Last updated: 2026-11-06_
 
 | Item | State |
 |---|---|
-| Main repo `paperless_cheque_dev` | `f8baa0e` (2026-11-06) — pushed with the user's approval |
-| Backup repo `papperless-backup` | `f8baa0e` |
-| UAT VM | Deploy `f8baa0e` (was `cdba8cb`, tag `backup-before-cdba8cb`): `git pull origin main` + `nssm restart PaperlessChequeApi`; `194.233.75.55:8007`, folder `D:\AI-project\papperless-cheque` |
+| Main repo `paperless_cheque_dev` | `a2ff35d` (2026-11-10) — top-level `cheque_info`, response object |
+| Backup repo `papperless-backup` | `a2ff35d` |
+| UAT VM | `10a4eff` (case study, deployed + verified 2026-11-06, tag `backup-before-10a4eff`). `a2ff35d` deploy pending; `194.233.75.55:8007`, folder `D:\AI-project\papperless-cheque` |
 
 ### ▶ Resume here (next session)
-1. Confirm the VM deploy (health + one real request; check `logs\results` trace).
-2. Results of regression scenarios 01, 06, 23, 24, 26, 32 (stricter one-digit-doubt prompt) and
-   Arabic scenarios 50–60 (incl. 57b–57f, 58b) were not yet reported — ask the user.
-3. Tell the .NET/frontend team: `ChequeHolderNameAr`, new OcrResponse texts, `X-Request-ID`.
-4. Pending user decisions: Arabic letter variants (ا/أ/إ, ة/ه, ى/ي) equal?; second-read
-   verification (option A) for confidently misread digits; Arabic amount-in-words converter.
+1. Deploy `a2ff35d` to the VM **together with the .NET change** (response is now
+   `{cheque_info, payments}`; `cheque_info` only at the top level, per-payment -> 422).
+2. After deploy: one `/match` with top-level `cheque_info`, check `CaseStudy/` and `logs\results`.
+3. Pending user decisions: payee one-letter misreads (A/B/C); Arabic letter variants;
+   alteration second check and confident year misread (both on hold with the team).
 
 ---
 
@@ -37,6 +36,9 @@ _Last updated: 2026-11-06_
 | Cropped output = one-page PDF `<name>_ocr.pdf` / `_ocr_N.pdf` | User's naming standard |
 | Cropped folder `ApplicationFiles/ChequeMatchOcr/Cropped/<request-id>/` | One GUID per request: no overwrites on concurrent / repeated hits |
 | Name / IBAN checks are **strict**, and only when a value is sent | User asked for strict; empty = skip |
+| `cheque_info` once at the request top level, checked for every payment; inside a payment -> 422; response `{cheque_info, payments}` | User 2026-11-10: one tenant's cheques share payee / holder / IBAN; per-payment overrides too complicated |
+| Case study: failed cheques saved after the response to `ApplicationFiles/CaseStudy/<request-id>/` (crop **or** original + case JSON), daily index, no clearing | User wants to study why matches fail without slowing the main pipeline |
+| Case study duplicates: fingerprint = file content hash + cheque index; repeats only indexed | Amount / date / OcrResponse are not unique (user) |
 | Names ignore case, spaces and punctuation (`MS.` = `MS`) | User: a missing dot must not fail the match |
 | Names may be English or Arabic; same script strict, other script by sound; `ChequeHolderNameAr` key | User: .NET may send either; check both ways and report mismatches |
 | Doubtful date part named (`Year of the cheque date is not clearly visible.`); one doubtful digit = unclear | Model read handwritten 2026 as 2024; user: don't guess, say exactly what is unclear |
@@ -74,9 +76,11 @@ _Last updated: 2026-11-06_
 ## Integration notes (frontend / .NET)
 
 - `POST /api/v1/cheques/match`, headers `Content-Type: application/json`, `X-API-Key`.
-- `file_urls`: JSON array of plain URL strings. List key: `payments`.
-- Optional per payment: `ChequepayeeName`, `ChequeHolderName`, `ChequeHolderNameAr`, `ChequeHolderIBAN`
-  (names in English or Arabic; Arabic-Indic digits accepted in DueDate / IBAN).
+- `file_urls`: JSON array of plain URL strings (one item per URL). List key: `payments`.
+- Optional **top-level** `cheque_info`: `ChequepayeeName`, `ChequeHolderName`, `ChequeHolderNameAr`,
+  `ChequeHolderIBAN` (names in English or Arabic; Arabic-Indic digits accepted in DueDate / IBAN).
+  Not allowed inside a payment (422). Response: `{"cheque_info": ..., "payments": [...]}`.
+- `POST /api/v1/cheques/match/upload`: form-data `files`, `payments` (JSON), optional `cheque_info` (JSON).
 - Every response has `X-Request-ID` (same id as the log trace and the cropped folder).
 - Always use the returned URLs; fall back to `MatchedOcrFileURL` when `CroppedOCRFileURL` is null.
 - Client timeout ≥ 120 s. Call from the backend, not the browser.
@@ -111,7 +115,7 @@ Local samples: `samples/cheque_1..4.pdf` (10000 @ 27-09-2024, 5333 @ 05-08-2026,
 
 ## Open items
 
-- Deploy `f8baa0e` to VM; tell frontend about `cheque_info`, `/cheques/match/upload` and new messages.
+- Deploy `a2ff35d` to VM with the .NET change; tell frontend about top-level `cheque_info`, the response object, `/cheques/match/upload` and new messages.
 - ON HOLD: model misses strike-through ALTERATION (cheque_3); altered cheque can be Matched. Focused second check proposed, not built.
 - Watch UAT for strict-name false negatives and over/under-strict "unclear" / issue calls.
 - Bank statements not handled yet.

@@ -22,7 +22,11 @@ A FastAPI service for UAE property-leasing cheques.
 2. **Match** (`POST /api/v1/cheques/match`): send cheque file URLs (Azure Blob) plus the
    expected payment schedule from the backend; the API OCRs every file, marks each payment
    as matched / not matched, and crops/rotates the **matched** cheques into `_ocr.pdf` files.
-3. **Health** (`GET /api/v1/health`): `{"status": "ok", "version": "1.0.0"}` only. No auth.
+3. **Match upload** (`POST /api/v1/cheques/match/upload`, 2026-11-04): same as Match for files
+   uploaded in the request (form-data `files`, `payments`, optional `cheque_info`).
+4. **Health** (`GET /api/v1/health`): `{"status": "ok", "version": "1.0.0"}` only. No auth.
+5. **Case study** (2026-11-06, background): files behind failed matches saved to
+   `ApplicationFiles/CaseStudy/` for review (§3.8).
 
 OCR is done by a Google Gemini vision model (`google-genai` SDK, structured JSON output).
 The same call also returns the cheque layout (page, bounding box, rotation, needs_crop).
@@ -45,14 +49,17 @@ app/
 ├── core/
 │   ├── config.py                Settings: JSON config files + .env + env vars (see §4)
 │   ├── exceptions.py            AppError, AuthenticationError(401), InvalidRequestError(400),
-│   │                            FileValidationError, FileDownloadError(400), ExtractionError(502)
+│   │                            InvalidPaymentsError / InvalidChequeInfoError /
+│   │                            ChequeInfoInPaymentError (422), FileValidationError,
+│   │                            FileDownloadError(400), ExtractionError(502)
 │   ├── logging.py               DailyFileHandler, DualTimezoneFormatter, log_result()
 │   └── timezones.py             UAE (+4) and IST (+5:30)
 ├── prompts/cheque_extraction.py fields + layout (page, bounding_box, rotation_degrees, needs_crop)
 ├── schemas/
 │   ├── cheque.py                ChequeEntity (public), ChequeOcr (adds layout, never serialised),
 │   │                            ServiceType, ChequeExtraction
-│   ├── matching.py              RentPayment (extra="allow"), MatchRequest
+│   ├── matching.py              ChequeInfo, RentPayment (extra="allow"; rejects cheque_info inside a
+│   │                            payment; _shared_info private), MatchRequest, MatchResponse
 │   └── response.py              TokenUsage, FileResult (cheque_files internal), BatchResponse
 ├── services/
 │   ├── extraction_service.py    /extract use case
@@ -63,6 +70,8 @@ app/
 │   ├── blob_storage.py          BlobStorage: blob_name(url), url_for (optional SAS), download, upload
 │   ├── image_processor.py       OpenCV: needs_processing, load_page, crop, rotate, encode_pdf
 │   ├── cheque_imaging.py        attach_cheque_files(only=...), processed_name(), save to blob/local
+│   ├── case_study.py            prepare() in request, save() as BackgroundTask: failed cheques ->
+│   │                            CaseStudy/<request-id>/, _index/<date>.jsonl, _seen/ fingerprints
 │   └── gemini/                  client.py, generation.py (config, retries, usage)
 └── utils/
     ├── dates.py                 parse_date(): lenient, day-first
@@ -92,12 +101,29 @@ no logic. `payment_matcher.py`, `image_processor.py` and `utils/` have no I/O.
 - Allowed types: JPG, PNG, WEBP, HEIC/HEIF, PDF. Max 15 MB, max 20 files, 5 concurrent model calls.
 
 ### 3.2 Matching (`/cheques/match`)
-Request: `{"file_urls": [...], "payments": [ {RentPaymentId, Installment, ServiceId,
-ServiceDescription, Amount, DueDate, ChequepayeeName?, ChequeHolderName?, ChequeHolderNameAr?,
-ChequeHolderIBAN?, ...} ]}`.
-`file_urls` must be a JSON **array of plain URL strings** (not objects, not comma-separated);
-the list key is `payments` (not `payment_services`) — the .NET team hit 422 on both (2026-10-29).
-Response: the **payment list only**; extra keys the caller sends are returned unchanged. Four keys filled:
+Request (**format since 2026-11-10, commit `a2ff35d`**):
+```json
+{"file_urls": ["https://.../cheque_1.pdf"],
+ "cheque_info": {"ChequepayeeName": "...", "ChequeHolderName": "...",
+                 "ChequeHolderNameAr": "...", "ChequeHolderIBAN": "..."},
+ "payments": [{"RentPaymentId": 1, "Installment": 1, "ServiceId": 1,
+               "ServiceDescription": "Property Rent", "Amount": 10000, "DueDate": "2024-09-27T00:00:00"}]}
+```
+- `cheque_info` is sent **once, at the top level**, and checked for **every** payment (one tenant:
+  same payee / holder / IBAN on all cheques). Optional; null / empty keys are not checked.
+- A payment carrying its own `cheque_info`, or the flat keys (both earlier formats), returns **422**
+  `Send cheque_info once at the top level of the request, not inside a payment.` (user decision
+  2026-11-10: per-payment overrides are too complicated; null / empty values there are just dropped).
+- History: flat keys on the payment (11-02) -> `cheque_info` inside each payment (11-04, `f8baa0e`)
+  -> top level only (11-10).
+- `file_urls` must be a JSON **array of plain URL strings** (not objects, not comma-separated);
+  the list key is `payments` (not `payment_services`) — the .NET team hit 422 on both (2026-10-29),
+  and on 2026-11-06 sent two URLs comma-joined in one string (BlobNotFound). Watch for a trailing
+  `%22` in URLs pasted by the user (invalid JSON).
+
+Response (since 2026-11-10): **`{"cheque_info": <as sent or null>, "payments": [...]}`** (before:
+a plain list of payments — breaking change for .NET). Payments never repeat `cheque_info`; extra
+keys the caller sends are returned unchanged. Four keys filled:
 
 | Key | Matched | Not matched |
 |---|---|---|
@@ -141,6 +167,10 @@ Response: the **payment list only**; extra keys the caller sends are returned un
   unparseable `DueDate` -> 422; >20 files -> 400.
 - Key names history: `MatchedOcrFile` renamed to `MatchedOcrFileURL` and `CroppedOCRFileURL`
   added on 2026-10-28 (breaking change for frontend).
+- `/cheques/match/upload`: form-data `files` (repeat), `payments` (JSON list), optional
+  `cheque_info` (JSON object). Invalid `payments` -> 422 InvalidPaymentsError; invalid
+  `cheque_info` -> 422 InvalidChequeInfoError. `MatchedOcrFileURL` = uploaded file name; crops in
+  `processed_folder/<request-id>/`. Same response shape as `/match`.
 
 ### 3.3 Crop / rotation (matched cheques only)
 - Order: extract all -> match -> `_crop_matched()` processes **only matched cheques**.
@@ -233,6 +263,26 @@ of each cheque from a full-resolution crop; disagreement -> unclear (option A: m
 `tilt_degrees`) are requested as **strings, maxLength 12** and parsed back (`_parse_number`);
 `amount_in_words_value` removed (backend converts the words). `generate_structured` retries on
 invalid / cut-off JSON and traces wasted tokens.
+
+### 3.8 Case study of failed matches (2026-11-06, commit `10a4eff`)
+- After the response (FastAPI `BackgroundTasks`; max 2 at once), every cheque behind a payment with
+  `MatchedWithOcr: false`, and every file that could not be read, is saved to
+  `<case_study_folder>/<request-id>/` — UAT `ApplicationFiles/CaseStudy/` in blob, local
+  `samples\CaseStudy\`. Response content and timing unaffected; errors only logged (`CASE_STUDY`).
+- Per failed cheque: `<name>_ocr[_N].pdf` (crop/rotation, when the file needs it) **or** the original
+  (blob: server-side copy) — never both (user rule); plus `<name>_case[_N].json`: request_id,
+  created_at, endpoint, file {name, source, cheque_index, cheques_in_file, original, cropped},
+  failed_payments [RentPaymentId, Installment, Amount, DueDate, cheque_info checked, OcrResponse],
+  ocr_read {page, date, amount, words, payee, holder, holder_ar, iban, unclear_fields, issues,
+  orientation, error}. No sharpness, no model name (user rule). Contains names / IBANs.
+- Unreadable file: case JSON with `error` + the payments that found no cheque.
+- `_index/<YYYY-MM-DD>.jsonl` (UAE date, append blob): one line per failure (at, request_id,
+  endpoint, file, cheque_index, RentPaymentId, OcrResponse, case_file, repeat_of).
+- **Duplicates:** fingerprint = sha256(file bytes) + cheque index (amount / date / OcrResponse are
+  not unique — user); claimed atomically in `_seen/<fingerprint>.json`. Same file failing again ->
+  only an index line with `repeat_of: <first request id>`. Markers never expire (no clearing period).
+- Config: `case_study_enabled` (true), `case_study_folder` (`ApplicationFiles/CaseStudy`; local `CaseStudy`).
+- Verified on UAT 2026-11-06 (blob save, repeats, index append 201).
 
 ---
 
@@ -366,12 +416,20 @@ Rules for main + backup repos:
 | 2026-11-02 | Request trace (one dict per request, X-Request-ID); stale check removed; names ignore punctuation; numbers as strings + words converter (loops fixed: requests 0 retries, 4–10 s vs 74 s) |
 | 2026-11-03 | All scenarios 01–40 tested by user; doubtful date part named (day/month/year), one-digit-doubt rule; Arabic: `ChequeHolderNameAr`, English↔Arabic name matching by sound, Arabic-Indic digits; Arabic test scenarios 50–60. pytest 122 passed. Committed `cdba8cb`, pushed to **main + backup** (user approved) |
 
+| 2026-11-06 | Case study of failed matches (background; crop or original + case JSON; daily index; duplicate protection by file-content fingerprint). Commit `10a4eff` -> backup + main; **deployed to UAT** (tag `backup-before-10a4eff`), verified. Boss tracker workbook (Desktop, not in any repo) |
+| 2026-11-10 | `cheque_info` moved to the **top level** of the request (checked for every payment); per-payment `cheque_info` / flat keys -> 422; response is now `{cheque_info, payments}`; `/match/upload` optional `cheque_info` form field. pytest 178. Commit `a2ff35d` -> backup + main; **VM deploy pending — deploy together with the .NET change** |
 | 2026-11-04 | `/cheques/match/upload` (form-data files + payments JSON, same checks); payee / holder / IBAN keys grouped in `cheque_info` (flat keys still accepted); rotation from MICR line position (model text_top mixed up left/right; fallback only); one re-read when a cheque comes back with no date and no amount; closest-cheque ranking (unreadable before clearly different); trace cheque index 0-based. Regression 01/03/20-24/26/50 passed. pytest 152. Commit `f8baa0e` -> backup 2026-11-04, main 2026-11-06 (user approved) |
 
 ## 12. Open items
-- **Main + backup at `f8baa0e` (2026-11-06).** VM: tag `backup-before-f8baa0e` + folder copy, `git pull`, `nssm restart PaperlessChequeApi`.
+- **Main + backup at `a2ff35d` (2026-11-10); UAT VM at `10a4eff`.** Deploy: tag `backup-before-a2ff35d`
+  + robocopy folder copy, `git pull origin main`, `nssm restart PaperlessChequeApi`. Breaking for
+  .NET (response object, top-level cheque_info) — coordinate.
+- Declined for now (2026-11-06): 422 for comma-joined URLs in `file_urls`; quieting the Azure SDK
+  HTTP logging (INFO lines with headers fill `logs/app`).
+- Payee one-letter misreads on UAT (3 payments): options A strict / B 1 letter per word for
+  handwritten payee / C softer message — user decision pending.
 - **ALTERATION missed (on hold by user):** since ~2026-11-04 the model no longer flags the cheque_3 payee strike-through (scenarios 14 / 24), also on the old deployed code -> an altered cheque can come back Matched. Proposed (not built): focused second alteration check on matched cheques.
-- Tell .NET: `cheque_info`, `/cheques/match/upload`, X-Request-ID; client timeout >= 120 s (empty-read retry can add ~19 s).
+- Tell .NET: top-level `cheque_info` + response `{cheque_info, payments}`, `/cheques/match/upload`, X-Request-ID; client timeout >= 120 s (empty-read retry can add ~19 s).
 - Regression of the stricter doubt prompt (01, 06, 23, 24, 26, 32) and Arabic scenarios 50–60 not
   yet confirmed against the real model at push time — check UAT results.
 - Decide: Arabic letter variants equal or not; Arabic month names; Arabic amount-in-words converter;
