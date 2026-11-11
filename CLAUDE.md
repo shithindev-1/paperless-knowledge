@@ -363,10 +363,14 @@ cheque_4 6667 @ 05-03-2027.
 - VM needs its own `.env` (APP_ENV=uat, API_KEYS, keys, connection string) and
   `config\settings.uat.json` (real `gemini_model`, blob base URL).
 - URLs: health `http://194.233.75.55:8007/api/v1/health`, Swagger `http://194.233.75.55:8007/docs`.
-- Update (old flow, up to `a2ff35d`): `git pull origin main` -> `nssm restart PaperlessChequeApi` (pip install only if requirements change).
-- **From 2026-11-11 the VM is to deploy from the release repo** (`softspace.ocr_service`, branch `uat`,
-  subfolder `paperless_cheque/`). Switching the VM folder / NSSM working directory to that clone is pending;
-  keep the same `.env`, `config\settings.uat.json`, port 8007 and service name.
+- Update: `git pull origin main` -> `nssm restart PaperlessChequeApi` (pip install only if requirements change).
+- NSSM: Application `D:\AI-project\papperless-cheque\.venv\Scripts\python.exe`, AppDirectory the same folder,
+  AppStdout / AppStderr `logs\service-stdout.log` / `logs\service-stderr.log` in that folder.
+- VM backups (2026-11-11): folder `D:\AI-project\papperless-cheque_backup_20261111` (8869 files, verified),
+  tag `backup-before-uat-repo` at `a2ff35d`, NSSM dump `D:\AI-project\PaperlessChequeApi_nssm_backup_20261111.txt`.
+- **Lesson (2026-11-11):** when moving the service to a new folder, clone + `.env` / `settings.uat.json` + venv
+  FIRST and check `Test-Path ...\.venv\Scripts\python.exe`; only then `nssm set` + restart. Switching first
+  left UAT `SERVICE_STOPPED` until rolled back.
 - Issues hit: missing venv (SERVICE_STOPPED); missing `.env`/`settings.uat.json` (Field required);
   no firewall rule (external timeout); placeholder `gemini_model` -> model 400 -> "None of the cheque files could be processed."
 
@@ -374,15 +378,16 @@ cheque_4 6667 @ 05-03-2027.
 
 ## 9. Repos & workflow
 
-- **Release repo (from 2026-11-11):** `https://github.com/tittosoftspace/softspace.ocr_service`, branch
-  **`uat`**, subfolder **`paperless_cheque/`**. The latest code goes ONLY there, then to the VM.
+- **Release repo — ON HOLD (2026-11-11):** `https://github.com/tittosoftspace/softspace.ocr_service`, branch
+  **`uat`**, subfolder **`paperless_cheque/`**. Pushed (`2ffea84`) then removed by the user (`4c21954`); the
+  branch is identical to before (`d719901`). VM stays on the dev-repo clone. If restarted:
   Another project (softspace OCR service) lives at the branch root: never touch or mix anything outside
   `paperless_cheque/`. Local clone `D:\softspace\Desktop\ocr-service-uat`.
   Update: clear `paperless_cheque/` -> `git archive` HEAD of the dev project into it (committed files only:
   no `.env`, samples, logs) -> `git status` must show only `paperless_cheque/` paths -> commit + push `uat`
-  (user does it, or explicit permission). That branch has a committed root `.env` of the other project;
-  never commit ours there.
-- **Dev repo** (`origin`, `paperless_cheque_dev`): earlier main repo. Clean and professional.
+  (user does it, or explicit permission). User decided the VM's UAT `.env` + `config/settings.uat.json` would be
+  committed there (`git add -f`, from the VM) — never overwrite them on later updates; rotate keys before prod.
+- **Main repo** (`origin`, `paperless_cheque_dev`): ships to UAT (VM pulls it). Clean and professional.
 - **Backup repo** (`backup`): same code, `git push backup main`.
 - **Knowledge repo** (this file), `D:\softspace\Desktop\paperless-knowledge`. Update after every change.
 
@@ -430,13 +435,13 @@ Rules for main + backup repos:
 | 2026-11-06 | Case study of failed matches (background; crop or original + case JSON; daily index; duplicate protection by file-content fingerprint). Commit `10a4eff` -> backup + main; **deployed to UAT** (tag `backup-before-10a4eff`), verified. Boss tracker workbook (Desktop, not in any repo) |
 | 2026-11-10 | `cheque_info` moved to the **top level** of the request (checked for every payment); per-payment `cheque_info` / flat keys -> 422; response is now `{cheque_info, payments}`; `/match/upload` optional `cheque_info` form field. pytest 178. Commit `a2ff35d` -> backup + main; **VM deploy pending — deploy together with the .NET change** |
 | 2026-11-10 | `a2ff35d` **deployed to UAT** by user; Postman test 7 (repeat send) verified: first send saved, second only indexed (`1 repeat(s)`) |
-| 2026-11-11 | Release repo moved to `softspace.ocr_service` branch `uat`, subfolder `paperless_cheque/` (code at `a2ff35d`, exported with `git archive`). Zip of `a2ff35d` on Desktop. Backup already at `a2ff35d` |
+| 2026-11-11 | Tried release repo `softspace.ocr_service` branch `uat`, subfolder `paperless_cheque/` (`2ffea84`, no secrets); VM switched to it before clone/venv -> UAT stopped, rolled back; user removed the folder (`4c21954`) and put the plan on hold. VM verified on `a2ff35d` from the old folder. VM backup + zip of `a2ff35d` on Desktop. Backup repo already at `a2ff35d` |
 | 2026-11-04 | `/cheques/match/upload` (form-data files + payments JSON, same checks); payee / holder / IBAN keys grouped in `cheque_info` (flat keys still accepted); rotation from MICR line position (model text_top mixed up left/right; fallback only); one re-read when a cheque comes back with no date and no amount; closest-cheque ranking (unreadable before clearly different); trace cheque index 0-based. Regression 01/03/20-24/26/50 passed. pytest 152. Commit `f8baa0e` -> backup 2026-11-04, main 2026-11-06 (user approved) |
 
 ## 12. Open items
-- **Dev + backup + release (`softspace.ocr_service` uat / `paperless_cheque/`) at `a2ff35d`; UAT VM at
-  `a2ff35d` (2026-11-10).** Pending: switch the VM to deploy from the release repo clone. Postman tests
-  1–6 results not yet reported (test 7 passed). Breaking for .NET (response object, top-level
+- **Main + backup at `a2ff35d`; UAT VM at `a2ff35d` from `D:\AI-project\papperless-cheque` (verified
+  2026-11-11).** Release repo (`softspace.ocr_service` uat) on hold. Postman tests 1–6 results not yet
+  reported (test 7 passed). Breaking for .NET (response object, top-level
   cheque_info) — coordinate.
 - Case study log says `-> <folder>` even when every failure is a repeat (folder not created) — cosmetic,
   optional one-line fix offered.

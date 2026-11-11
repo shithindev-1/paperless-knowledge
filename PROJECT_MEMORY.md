@@ -11,14 +11,13 @@ _Last updated: 2026-11-11_
 
 | Item | State |
 |---|---|
-| **Release repo** `softspace.ocr_service`, branch `uat`, folder `paperless_cheque/` | `a2ff35d` (2026-11-11). **Latest code goes only here**, then to the VM. Never touch the other project at the branch root |
-| Dev repo `paperless_cheque_dev` | `a2ff35d` (2026-11-10) — top-level `cheque_info`, response object |
+| Main repo `paperless_cheque_dev` | `a2ff35d` (2026-11-10) — top-level `cheque_info`, response object |
+| Release repo `softspace.ocr_service` (`uat`, `paperless_cheque/`) | **On hold** (2026-11-11): pushed then removed by user; branch back to its original state. Never touch the other project there |
 | Backup repo `papperless-backup` | `a2ff35d` |
-| UAT VM | `a2ff35d` (deployed 2026-11-10, repeat test verified); `194.233.75.55:8007`, folder `D:\AI-project\papperless-cheque` (still the dev-repo clone) |
+| UAT VM | `a2ff35d` (deployed 2026-11-10, repeat test verified; re-verified 2026-11-11); `194.233.75.55:8007`, folder `D:\AI-project\papperless-cheque` (dev-repo clone); backup `papperless-cheque_backup_20261111` |
 
 ### ▶ Resume here (next session)
-1. Switch the VM to deploy from the release repo (`softspace.ocr_service` uat, `paperless_cheque/`);
-   keep `.env`, `settings.uat.json`, port 8007, NSSM `PaperlessChequeApi`.
+1. Release repo plan on hold. If restarted: clone + `.env` / settings + venv on the VM BEFORE `nssm set`.
 2. Get Postman tests 1–6 results on UAT (test 7 passed); tell .NET about `{cheque_info, payments}`.
 3. Pending user decisions: payee one-letter misreads (A/B/C); Arabic letter variants;
    alteration second check and confident year misread (both on hold with the team).
@@ -116,7 +115,7 @@ Local samples: `samples/cheque_1..4.pdf` (10000 @ 27-09-2024, 5333 @ 05-08-2026,
 
 ## Open items
 
-- Switch VM deploys to the release repo; tell frontend about top-level `cheque_info`, the response object, `/cheques/match/upload` and new messages.
+- Tell frontend about top-level `cheque_info`, the response object, `/cheques/match/upload` and new messages.
 - ON HOLD: model misses strike-through ALTERATION (cheque_3); altered cheque can be Matched. Focused second check proposed, not built.
 - Watch UAT for strict-name false negatives and over/under-strict "unclear" / issue calls.
 - Bank statements not handled yet.
