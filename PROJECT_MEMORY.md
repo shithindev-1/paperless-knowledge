@@ -3,7 +3,7 @@
 Short, durable memory for anyone (or any assistant) picking up this project. The full
 technical reference is [CLAUDE.md](CLAUDE.md). Update both after every change.
 
-_Last updated: 2026-11-10_
+_Last updated: 2026-11-11_
 
 ---
 
@@ -11,14 +11,15 @@ _Last updated: 2026-11-10_
 
 | Item | State |
 |---|---|
-| Main repo `paperless_cheque_dev` | `a2ff35d` (2026-11-10) — top-level `cheque_info`, response object |
+| **Release repo** `softspace.ocr_service`, branch `uat`, folder `paperless_cheque/` | `a2ff35d` (2026-11-11). **Latest code goes only here**, then to the VM. Never touch the other project at the branch root |
+| Dev repo `paperless_cheque_dev` | `a2ff35d` (2026-11-10) — top-level `cheque_info`, response object |
 | Backup repo `papperless-backup` | `a2ff35d` |
-| UAT VM | `10a4eff` (case study, deployed + verified 2026-11-06, tag `backup-before-10a4eff`). `a2ff35d` deploy pending; `194.233.75.55:8007`, folder `D:\AI-project\papperless-cheque` |
+| UAT VM | `a2ff35d` (deployed 2026-11-10, repeat test verified); `194.233.75.55:8007`, folder `D:\AI-project\papperless-cheque` (still the dev-repo clone) |
 
 ### ▶ Resume here (next session)
-1. Deploy `a2ff35d` to the VM **together with the .NET change** (response is now
-   `{cheque_info, payments}`; `cheque_info` only at the top level, per-payment -> 422).
-2. After deploy: one `/match` with top-level `cheque_info`, check `CaseStudy/` and `logs\results`.
+1. Switch the VM to deploy from the release repo (`softspace.ocr_service` uat, `paperless_cheque/`);
+   keep `.env`, `settings.uat.json`, port 8007, NSSM `PaperlessChequeApi`.
+2. Get Postman tests 1–6 results on UAT (test 7 passed); tell .NET about `{cheque_info, payments}`.
 3. Pending user decisions: payee one-letter misreads (A/B/C); Arabic letter variants;
    alteration second check and confident year misread (both on hold with the team).
 
@@ -115,7 +116,7 @@ Local samples: `samples/cheque_1..4.pdf` (10000 @ 27-09-2024, 5333 @ 05-08-2026,
 
 ## Open items
 
-- Deploy `a2ff35d` to VM with the .NET change; tell frontend about top-level `cheque_info`, the response object, `/cheques/match/upload` and new messages.
+- Switch VM deploys to the release repo; tell frontend about top-level `cheque_info`, the response object, `/cheques/match/upload` and new messages.
 - ON HOLD: model misses strike-through ALTERATION (cheque_3); altered cheque can be Matched. Focused second check proposed, not built.
 - Watch UAT for strict-name false negatives and over/under-strict "unclear" / issue calls.
 - Bank statements not handled yet.
